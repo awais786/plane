@@ -1,44 +1,39 @@
 """
-Test spec for ProxyAuthMiddleware.
+Tests for ProxyAuthMiddleware.
 
 Location of middleware under test:
     apps/api/plane/authentication/middleware/proxy_auth.py
 
 Run (from apps/api/):
-    pytest specs/proxy-auth-tests.py -v
-
-All tests are in RED state until the middleware is implemented.
+    pytest plane/authentication/tests/test_proxy_auth.py -v
 
 Design contract being tested
 -----------------------------
-- Reads HTTP_X_AUTH_REQUEST_EMAIL and HTTP_X_AUTH_REQUEST_USER from request.META
+- Reads HTTP_X_AUTH_REQUEST_EMAIL from request.META
+- If MPASS_PROXY_AUTH_ENABLED is False → pass through (kill switch)
 - If request.user.is_authenticated → pass through immediately (no DB, no login)
 - If path starts with a bypass prefix → pass through immediately (no DB, no login)
   Default bypass prefixes: ["/god-mode", "/api/instances"]
 - If email header is absent → pass through unauthenticated
 - If email is present → get_or_create User, create Profile on first creation,
-  then call login(request, user) to establish session
+  then call user_login(request, user, is_app=True) to establish session
 - New users get: set_unusable_password(), is_password_autoset=True, is_email_verified=True
-- username is set to X-Auth-Request-User sub value when present, else email
+- username is always uuid4().hex (never the Cognito sub — avoids length/collision issues)
 - Email is normalised (lowercased + stripped) before DB lookup
-- IntegrityError on concurrent creation is handled by falling back to .get()
-- login() is called with explicit backend to avoid ambiguity
+- Inactive users pass through unauthenticated even with a valid header
+- IntegrityError on concurrent creation falls back to .get(email=email),
+  re-raises if the user still doesn't exist
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 from django.contrib.auth.models import AnonymousUser
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 
-# ---------------------------------------------------------------------------
-# Import the middleware under test.
-# This import will FAIL (ImportError) until the file is created — that is the
-# expected RED state in TDD.
-# ---------------------------------------------------------------------------
 from plane.authentication.middleware.proxy_auth import ProxyAuthMiddleware
-
-# Real models — tests hit an actual DB (no mocking per project policy)
 from plane.db.models import User, Profile
+
+PATCH_USER_LOGIN = "plane.authentication.middleware.proxy_auth.user_login"
 
 
 # ---------------------------------------------------------------------------
@@ -50,15 +45,9 @@ def make_request(path="/api/issues/", meta=None, authenticated_user=None):
     factory = RequestFactory()
     request = factory.get(path)
     request.session = {}
-
-    if authenticated_user:
-        request.user = authenticated_user
-    else:
-        request.user = AnonymousUser()
-
+    request.user = authenticated_user if authenticated_user else AnonymousUser()
     if meta:
         request.META.update(meta)
-
     return request
 
 
@@ -74,6 +63,27 @@ def make_middleware(get_response=None):
 # ---------------------------------------------------------------------------
 
 
+class TestProxyAuthMiddlewareKillSwitch:
+    """MPASS_PROXY_AUTH_ENABLED = False must disable the middleware entirely."""
+
+    @override_settings(MPASS_PROXY_AUTH_ENABLED=False)
+    def test_disabled_passes_through_without_login(self):
+        """
+        GIVEN  MPASS_PROXY_AUTH_ENABLED is False
+        WHEN   a request with a valid email header arrives
+        THEN   user_login() is never called
+        """
+        get_response = MagicMock(return_value=MagicMock(status_code=200))
+        middleware = make_middleware(get_response)
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "user@example.com"})
+
+        with patch(PATCH_USER_LOGIN) as mock_login:
+            middleware(request)
+
+        mock_login.assert_not_called()
+        get_response.assert_called_once_with(request)
+
+
 class TestProxyAuthMiddlewareAlreadyAuthenticated:
     """Middleware must short-circuit for requests that already carry a session."""
 
@@ -83,8 +93,7 @@ class TestProxyAuthMiddlewareAlreadyAuthenticated:
         GIVEN  a request whose user.is_authenticated is True
         WHEN   the middleware processes the request
         THEN   get_response is called exactly once
-               AND no User is created or queried by email
-               AND login() is never called
+               AND user_login() is never called
         """
         existing_user = django_user_model.objects.create_user(
             email="active@example.com",
@@ -93,23 +102,18 @@ class TestProxyAuthMiddlewareAlreadyAuthenticated:
         )
         get_response = MagicMock(return_value=MagicMock(status_code=200))
         middleware = make_middleware(get_response)
-
         request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "active@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-already-authed",
-            },
+            meta={"HTTP_X_AUTH_REQUEST_EMAIL": "active@example.com"},
             authenticated_user=existing_user,
         )
+        count_before = User.objects.count()
 
-        user_count_before = User.objects.count()
-
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         get_response.assert_called_once_with(request)
         mock_login.assert_not_called()
-        assert User.objects.count() == user_count_before
+        assert User.objects.count() == count_before
 
 
 class TestProxyAuthMiddlewareNoHeader:
@@ -120,14 +124,14 @@ class TestProxyAuthMiddlewareNoHeader:
         GIVEN  a request with no X-Auth-Request-Email header
         WHEN   the middleware processes the request
         THEN   get_response is called
-               AND login() is never called
+               AND user_login() is never called
                AND request.user remains AnonymousUser
         """
         get_response = MagicMock(return_value=MagicMock(status_code=200))
         middleware = make_middleware(get_response)
-        request = make_request()  # no META headers
+        request = make_request()
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         get_response.assert_called_once_with(request)
@@ -150,14 +154,9 @@ class TestProxyAuthMiddlewareNewUser:
                  has_usable_password() == False
         """
         middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "newuser@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "cognito-sub-001",
-            }
-        )
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "newuser@example.com"})
 
-        with patch("plane.authentication.middleware.proxy_auth.login"):
+        with patch(PATCH_USER_LOGIN):
             middleware(request)
 
         user = User.objects.get(email="newuser@example.com")
@@ -173,59 +172,36 @@ class TestProxyAuthMiddlewareNewUser:
         THEN   a Profile row is created for the new user
         """
         middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "profiletest@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "cognito-sub-002",
-            }
-        )
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "profiletest@example.com"})
 
-        with patch("plane.authentication.middleware.proxy_auth.login"):
+        with patch(PATCH_USER_LOGIN):
             middleware(request)
 
         user = User.objects.get(email="profiletest@example.com")
         assert Profile.objects.filter(user=user).exists()
 
     @pytest.mark.django_db
-    def test_username_set_to_sub_when_present(self):
+    def test_username_is_uuid_hex(self):
         """
-        GIVEN  a request with both email and sub headers
-        WHEN   a new user is created
-        THEN   user.username equals the X-Auth-Request-User sub value
+        GIVEN  a request for a new user
+        WHEN   the user is created
+        THEN   username is a 32-char hex string (uuid4().hex), not the Cognito sub
         """
         middleware = make_middleware()
         request = make_request(
             meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "subtest@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "unique-cognito-sub-xyz",
+                "HTTP_X_AUTH_REQUEST_EMAIL": "uuidtest@example.com",
+                "HTTP_X_AUTH_REQUEST_USER": "cognito-sub-should-not-be-username",
             }
         )
 
-        with patch("plane.authentication.middleware.proxy_auth.login"):
+        with patch(PATCH_USER_LOGIN):
             middleware(request)
 
-        user = User.objects.get(email="subtest@example.com")
-        assert user.username == "unique-cognito-sub-xyz"
-
-    @pytest.mark.django_db
-    def test_username_falls_back_to_email_when_sub_absent(self):
-        """
-        GIVEN  a request with an email header but no X-Auth-Request-User header
-        WHEN   a new user is created
-        THEN   user.username is set to the email (not blank, not errored)
-        """
-        middleware = make_middleware()
-        request = make_request(
-            meta={"HTTP_X_AUTH_REQUEST_EMAIL": "nosub@example.com"}
-            # no HTTP_X_AUTH_REQUEST_USER
-        )
-
-        with patch("plane.authentication.middleware.proxy_auth.login"):
-            middleware(request)
-
-        user = User.objects.get(email="nosub@example.com")
-        assert user.username  # non-empty
-        assert "@" in user.username or len(user.username) > 0
+        user = User.objects.get(email="uuidtest@example.com")
+        assert len(user.username) == 32
+        assert user.username != "cognito-sub-should-not-be-username"
+        assert user.username.isalnum()
 
 
 class TestProxyAuthMiddlewareExistingUser:
@@ -237,7 +213,7 @@ class TestProxyAuthMiddlewareExistingUser:
         GIVEN  a User already exists for the incoming email
         WHEN   the middleware processes a request with that email header
         THEN   no new User row is created
-               AND login() is called with the existing user
+               AND user_login() is called with the existing user
         """
         existing = django_user_model.objects.create_user(
             email="returning@example.com",
@@ -247,52 +223,62 @@ class TestProxyAuthMiddlewareExistingUser:
         count_before = User.objects.count()
 
         middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "returning@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-returning",
-            }
-        )
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "returning@example.com"})
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         assert User.objects.count() == count_before
+        call_kwargs = mock_login.call_args.kwargs
+        assert call_kwargs.get("user") == existing
 
-        # login() must be called with the correct user object
-        args, kwargs = mock_login.call_args
-        assert existing in args or kwargs.get("user") == existing
+    @pytest.mark.django_db
+    def test_inactive_user_is_not_logged_in(self, django_user_model):
+        """
+        GIVEN  a User exists but is_active == False
+        WHEN   a request arrives with that user's email header
+        THEN   user_login() is never called
+               AND get_response is called (request passes through unauthenticated)
+        """
+        django_user_model.objects.create_user(
+            email="inactive@example.com",
+            username="inactive_user",
+            password="x",
+            is_active=False,
+        )
+        get_response = MagicMock(return_value=MagicMock(status_code=200))
+        middleware = make_middleware(get_response)
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "inactive@example.com"})
+
+        with patch(PATCH_USER_LOGIN) as mock_login:
+            middleware(request)
+
+        mock_login.assert_not_called()
+        get_response.assert_called_once_with(request)
 
 
 class TestProxyAuthMiddlewareLogin:
-    """Middleware must always call login() after resolving the user."""
+    """Middleware must call user_login() with the correct arguments."""
 
     @pytest.mark.django_db
-    def test_login_is_called_with_request_and_user(self):
+    def test_user_login_called_with_request_user_and_is_app(self):
         """
         GIVEN  a valid email header for a new user
         WHEN   the middleware runs
-        THEN   login() is called with (request, user) positionally or by keyword
-               AND the user passed to login() has email == header email
+        THEN   user_login() is called with request=request, user=<resolved user>,
+               is_app=True
         """
         middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "logincheck@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-login-check",
-            }
-        )
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "logincheck@example.com"})
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         mock_login.assert_called_once()
-        call_args = mock_login.call_args
-        # request must be first positional arg or 'request' kwarg
-        passed_request = call_args.args[0] if call_args.args else call_args.kwargs["request"]
-        passed_user = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs["user"]
-        assert passed_request is request
-        assert passed_user.email == "logincheck@example.com"
+        call_kwargs = mock_login.call_args.kwargs
+        assert call_kwargs["request"] is request
+        assert call_kwargs["user"].email == "logincheck@example.com"
+        assert call_kwargs["is_app"] is True
 
 
 class TestProxyAuthMiddlewareBypassPaths:
@@ -303,20 +289,16 @@ class TestProxyAuthMiddlewareBypassPaths:
         """
         GIVEN  a request to /god-mode/setup/ with a valid email header
         WHEN   the middleware processes the request
-        THEN   login() is never called
-               AND no User is created
+        THEN   user_login() is never called AND no User is created
         """
         count_before = User.objects.count()
         middleware = make_middleware()
         request = make_request(
             path="/god-mode/setup/",
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "admin@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-admin",
-            },
+            meta={"HTTP_X_AUTH_REQUEST_EMAIL": "admin@example.com"},
         )
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         mock_login.assert_not_called()
@@ -327,20 +309,16 @@ class TestProxyAuthMiddlewareBypassPaths:
         """
         GIVEN  a request to /api/instances/config/ with a valid email header
         WHEN   the middleware processes the request
-        THEN   login() is never called
-               AND no User is created
+        THEN   user_login() is never called AND no User is created
         """
         count_before = User.objects.count()
         middleware = make_middleware()
         request = make_request(
             path="/api/instances/config/",
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "instance-admin@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-instance",
-            },
+            meta={"HTTP_X_AUTH_REQUEST_EMAIL": "instance-admin@example.com"},
         )
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         mock_login.assert_not_called()
@@ -348,7 +326,7 @@ class TestProxyAuthMiddlewareBypassPaths:
 
 
 class TestProxyAuthMiddlewareEdgeCases:
-    """Misc edge cases: email normalisation and concurrent creation races."""
+    """Email normalisation and concurrent creation races."""
 
     @pytest.mark.django_db
     def test_email_normalised_before_lookup(self, django_user_model):
@@ -356,8 +334,8 @@ class TestProxyAuthMiddlewareEdgeCases:
         GIVEN  a User exists with lowercase email "norm@example.com"
                AND the incoming header supplies "  NORM@EXAMPLE.COM  "
         WHEN   the middleware processes the request
-        THEN   the existing user is found (not a duplicate created)
-               AND login() is called with the original user
+        THEN   the existing user is found (no duplicate created)
+               AND user_login() is called with the original user
         """
         existing = django_user_model.objects.create_user(
             email="norm@example.com",
@@ -367,62 +345,39 @@ class TestProxyAuthMiddlewareEdgeCases:
         count_before = User.objects.count()
 
         middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "  NORM@EXAMPLE.COM  ",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-norm",
-            }
-        )
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "  NORM@EXAMPLE.COM  "})
 
-        with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
+        with patch(PATCH_USER_LOGIN) as mock_login:
             middleware(request)
 
         assert User.objects.count() == count_before
-        call_args = mock_login.call_args
-        passed_user = call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs["user"]
-        assert passed_user.pk == existing.pk
+        assert mock_login.call_args.kwargs["user"].pk == existing.pk
 
     @pytest.mark.django_db
     def test_integrity_error_race_condition_is_handled(self):
         """
-        GIVEN  a concurrent request causes an IntegrityError on User.save()
-               (simulated by patching get_or_create to raise on first call)
+        GIVEN  get_or_create raises IntegrityError (concurrent insert race)
+               AND the user already exists in the DB
         WHEN   the middleware processes the request
-        THEN   it falls back to User.objects.get(email=email)
-               AND login() is still called with the resolved user
-               AND no exception propagates to the caller
+        THEN   it falls back to .get(email=email)
+               AND user_login() is still called
+               AND no exception propagates
         """
         from django.db import IntegrityError
 
-        middleware = make_middleware()
-        request = make_request(
-            meta={
-                "HTTP_X_AUTH_REQUEST_EMAIL": "race@example.com",
-                "HTTP_X_AUTH_REQUEST_USER": "sub-race",
-            }
-        )
-
-        # Pre-create the user so the fallback .get() will succeed
-        existing = User.objects.create(
-            email="race@example.com",
-            username="sub-race",
-        )
+        existing = User.objects.create(email="race@example.com", username="race_user")
         existing.set_unusable_password()
         existing.save()
 
-        original_get_or_create = User.objects.get_or_create
+        middleware = make_middleware()
+        request = make_request(meta={"HTTP_X_AUTH_REQUEST_EMAIL": "race@example.com"})
 
-        call_count = {"n": 0}
+        def raise_integrity_error(*args, **kwargs):
+            raise IntegrityError("duplicate key value")
 
-        def raise_once(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise IntegrityError("duplicate key value")
-            return original_get_or_create(*args, **kwargs)
-
-        with patch.object(User.objects, "get_or_create", side_effect=raise_once):
-            with patch("plane.authentication.middleware.proxy_auth.login") as mock_login:
-                # Must not raise
+        with patch.object(User.objects, "get_or_create", side_effect=raise_integrity_error):
+            with patch(PATCH_USER_LOGIN) as mock_login:
                 middleware(request)
 
         mock_login.assert_called_once()
+        assert mock_login.call_args.kwargs["user"].pk == existing.pk
