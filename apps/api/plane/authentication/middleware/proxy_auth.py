@@ -2,13 +2,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # See the LICENSE file for details.
 
+from uuid import uuid4
+
 from django.conf import settings
-from django.contrib.auth import login
 from django.db import IntegrityError
 
+from plane.authentication.utils.login import user_login
 from plane.db.models import Profile, User
 
 _DEFAULT_BYPASS_PATHS = ["/god-mode", "/api/instances"]
+
+# Security note: header spoofing is not a concern on protected routes because
+# Traefik ForwardAuth overwrites X-Auth-Request-* headers before they reach
+# the app. Bypass paths never run this middleware, so spoofed headers there
+# have no effect either.
 
 
 class ProxyAuthMiddleware:
@@ -21,15 +28,19 @@ class ProxyAuthMiddleware:
     native Django session — so the rest of the app sees a fully authenticated
     request.user just as it would after a normal login.
 
-    Bypass paths (god-mode, instances admin) are skipped entirely; the session
-    check means returning users pay zero DB cost on subsequent requests.
+    Set MPASS_PROXY_AUTH_ENABLED = False in settings to disable entirely.
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
-        self.bypass_paths = getattr(settings, "MPASS_BYPASS_PATHS", _DEFAULT_BYPASS_PATHS)
+        self.enabled = getattr(settings, "MPASS_PROXY_AUTH_ENABLED", True)
+        bypass = getattr(settings, "MPASS_BYPASS_PATHS", _DEFAULT_BYPASS_PATHS)
+        self.bypass_paths = [bypass] if isinstance(bypass, str) else bypass
 
     def __call__(self, request):
+        if not self.enabled:
+            return self.get_response(request)
+
         # Layer 2 session already valid — nothing to do.
         if request.user.is_authenticated:
             return self.get_response(request)
@@ -43,23 +54,30 @@ class ProxyAuthMiddleware:
             return self.get_response(request)
 
         email = email.strip().lower()
-        sub = request.META.get("HTTP_X_AUTH_REQUEST_USER")
-        username = sub or email
+        user = self._resolve_user(email)
 
-        user = self._resolve_user(email, username)
-        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        # Respect deactivated accounts — mPass authentication does not
+        # override an explicit Plane account suspension.
+        if not user.is_active:
+            return self.get_response(request)
+
+        user_login(request=request, user=user, is_app=True)
         return self.get_response(request)
 
-    def _resolve_user(self, email, username):
+    def _resolve_user(self, email):
         try:
             user, created = User.objects.get_or_create(
                 email=email,
-                defaults={"username": username},
+                defaults={"username": uuid4().hex},
             )
         except IntegrityError:
-            # A concurrent request already created the user between our lookup
-            # and insert. Fall back to a plain get.
-            user = User.objects.get(email=email)
+            # A concurrent request raced us to the insert. The collision could
+            # be on email or username — fall back to get() by email, and re-raise
+            # if the user still doesn't exist (a different integrity violation).
+            try:
+                user = User.objects.get(email=email)
+            except User.DoesNotExist:
+                raise
             created = False
 
         if created:
@@ -67,6 +85,6 @@ class ProxyAuthMiddleware:
             user.is_password_autoset = True
             user.is_email_verified = True
             user.save(update_fields=["password", "is_password_autoset", "is_email_verified"])
-            Profile.objects.create(user=user)
+            Profile.objects.get_or_create(user=user)
 
         return user
