@@ -55,7 +55,7 @@ class ProxyAuthMiddleware:
         if is_bypass_path(request.path, self.bypass_paths):
             return self.get_response(request)
 
-        email = request.META.get("HTTP_X_AUTH_REQUEST_EMAIL")
+        email = request.META.get("HTTP_X_AUTH_REQUEST_EMAIL") or request.META.get("HTTP_X_FORWARDED_EMAIL")
         if not email:
             return self.get_response(request)
 
