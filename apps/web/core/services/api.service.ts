@@ -27,8 +27,11 @@ export abstract class APIService {
       (response) => response,
       (error) => {
         if (error.response && error.response.status === 401) {
-          const currentPath = window.location.pathname;
-          window.location.replace(`/${currentPath ? `?next_path=${currentPath}` : ``}`);
+          // Redirect to the oauth2-proxy sign-in endpoint so the OIDC flow starts.
+          // Use this.baseURL (e.g. http://localhost) so the redirect works whether
+          // the frontend is accessed directly on its dev port or through the proxy.
+          const rd = encodeURIComponent(window.location.href);
+          window.location.replace(`${this.baseURL}/oauth2/sign_in?rd=${rd}`);
         }
         return Promise.reject(error);
       }
