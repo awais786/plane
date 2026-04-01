@@ -16,9 +16,12 @@ Design contract (matches current implementation)
 - If path starts with a bypass prefix → pass through immediately (no DB, no login)
   Default bypass prefixes: ["/god-mode", "/api/instances"]
 - If email header is absent → pass through unauthenticated
-- If email is present → get_or_create User, create Profile on first creation,
-  then call user_login(request=request, user=user, is_app=True) to establish session
-- New users get: set_unusable_password(), is_password_autoset=True, is_email_verified=True
+- If email is present → get_or_create User with all flags set atomically in the
+  INSERT (password=make_password(None), **NEW_USER_FLAGS), create Profile on first
+  creation, then call user_login(request=request, user=user, is_app=True) to
+  establish session
+- New users get: make_password(None) (unusable password hash), is_password_autoset=True,
+  is_email_verified=True — all set in a single INSERT via get_or_create defaults
 - username is always uuid4().hex (never the Cognito sub — avoids length/collision issues)
 - Email is normalised (lowercased + stripped) before DB lookup
 - Inactive users pass through unauthenticated even with a valid header

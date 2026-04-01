@@ -5,6 +5,7 @@
 from uuid import uuid4
 
 from django.conf import settings
+from django.contrib.auth.hashers import make_password
 from django.db import IntegrityError
 
 from plane.authentication.utils.login import user_login
@@ -73,7 +74,11 @@ class ProxyAuthMiddleware:
         try:
             user, created = User.objects.get_or_create(
                 email=email,
-                defaults={"username": uuid4().hex},
+                defaults={
+                    "username": uuid4().hex,
+                    "password": make_password(None),
+                    **NEW_USER_FLAGS,
+                },
             )
         except IntegrityError as exc:
             # A concurrent request raced us to the insert. The collision could
@@ -87,12 +92,6 @@ class ProxyAuthMiddleware:
             created = False
 
         if created:
-            user.set_unusable_password()
-            for field, value in NEW_USER_FLAGS.items():
-                setattr(user, field, value)
-            # NEW_USER_FLAGS keys intentionally drive update_fields — adding a
-            # flag to the core dict automatically includes it in the save().
-            user.save(update_fields=["password", *NEW_USER_FLAGS.keys()])
             Profile.objects.get_or_create(user=user)
 
         return user

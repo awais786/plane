@@ -12,12 +12,6 @@ from .views import (
     ChangePasswordEndpoint,
     # App
     EmailCheckEndpoint,
-    GitLabCallbackEndpoint,
-    GitLabOauthInitiateEndpoint,
-    GitHubCallbackEndpoint,
-    GitHubOauthInitiateEndpoint,
-    GoogleCallbackEndpoint,
-    GoogleOauthInitiateEndpoint,
     MagicGenerateEndpoint,
     MagicSignInEndpoint,
     MagicSignUpEndpoint,
@@ -28,22 +22,12 @@ from .views import (
     ResetPasswordSpaceEndpoint,
     # Space
     EmailCheckSpaceEndpoint,
-    GitLabCallbackSpaceEndpoint,
-    GitLabOauthInitiateSpaceEndpoint,
-    GitHubCallbackSpaceEndpoint,
-    GitHubOauthInitiateSpaceEndpoint,
-    GoogleCallbackSpaceEndpoint,
-    GoogleOauthInitiateSpaceEndpoint,
     MagicGenerateSpaceEndpoint,
     MagicSignInSpaceEndpoint,
     MagicSignUpSpaceEndpoint,
     SignInAuthSpaceEndpoint,
     SignUpAuthSpaceEndpoint,
     SignOutAuthSpaceEndpoint,
-    GiteaCallbackEndpoint,
-    GiteaOauthInitiateEndpoint,
-    GiteaCallbackSpaceEndpoint,
-    GiteaOauthInitiateSpaceEndpoint,
 )
 
 urlpatterns = [
@@ -76,45 +60,6 @@ urlpatterns = [
         MagicSignUpSpaceEndpoint.as_view(),
         name="space-magic-sign-up",
     ),
-    ## Google Oauth
-    path("google/", GoogleOauthInitiateEndpoint.as_view(), name="google-initiate"),
-    path("google/callback/", GoogleCallbackEndpoint.as_view(), name="google-callback"),
-    path(
-        "spaces/google/",
-        GoogleOauthInitiateSpaceEndpoint.as_view(),
-        name="space-google-initiate",
-    ),
-    path(
-        "spaces/google/callback/",
-        GoogleCallbackSpaceEndpoint.as_view(),
-        name="space-google-callback",
-    ),
-    ## Github Oauth
-    path("github/", GitHubOauthInitiateEndpoint.as_view(), name="github-initiate"),
-    path("github/callback/", GitHubCallbackEndpoint.as_view(), name="github-callback"),
-    path(
-        "spaces/github/",
-        GitHubOauthInitiateSpaceEndpoint.as_view(),
-        name="space-github-initiate",
-    ),
-    path(
-        "spaces/github/callback/",
-        GitHubCallbackSpaceEndpoint.as_view(),
-        name="space-github-callback",
-    ),
-    ## Gitlab Oauth
-    path("gitlab/", GitLabOauthInitiateEndpoint.as_view(), name="gitlab-initiate"),
-    path("gitlab/callback/", GitLabCallbackEndpoint.as_view(), name="gitlab-callback"),
-    path(
-        "spaces/gitlab/",
-        GitLabOauthInitiateSpaceEndpoint.as_view(),
-        name="space-gitlab-initiate",
-    ),
-    path(
-        "spaces/gitlab/callback/",
-        GitLabCallbackSpaceEndpoint.as_view(),
-        name="space-gitlab-callback",
-    ),
     # Email Check
     path("email-check/", EmailCheckEndpoint.as_view(), name="email-check"),
     path("spaces/email-check/", EmailCheckSpaceEndpoint.as_view(), name="email-check"),
@@ -137,17 +82,4 @@ urlpatterns = [
     ),
     path("change-password/", ChangePasswordEndpoint.as_view(), name="forgot-password"),
     path("set-password/", SetUserPasswordEndpoint.as_view(), name="set-password"),
-    ## Gitea Oauth
-    path("gitea/", GiteaOauthInitiateEndpoint.as_view(), name="gitea-initiate"),
-    path("gitea/callback/", GiteaCallbackEndpoint.as_view(), name="gitea-callback"),
-    path(
-        "spaces/gitea/",
-        GiteaOauthInitiateSpaceEndpoint.as_view(),
-        name="space-gitea-initiate",
-    ),
-    path(
-        "spaces/gitea/callback/",
-        GiteaCallbackSpaceEndpoint.as_view(),
-        name="space-gitea-callback",
-    ),
 ]
