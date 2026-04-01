@@ -10,7 +10,12 @@ from django.db import IntegrityError
 from plane.authentication.utils.login import user_login
 from plane.db.models import Profile, User
 
-_DEFAULT_BYPASS_PATHS = ["/god-mode", "/api/instances"]
+from .proxy_auth_core import (
+    NEW_USER_FLAGS,
+    coerce_bypass_paths,
+    is_bypass_path,
+    normalise_email,
+)
 
 # Security note: header spoofing is not a concern on protected routes because
 # Traefik ForwardAuth overwrites X-Auth-Request-* headers before they reach
@@ -20,7 +25,7 @@ _DEFAULT_BYPASS_PATHS = ["/god-mode", "/api/instances"]
 
 class ProxyAuthMiddleware:
     """
-    Authenticate requests forwarded through oauth2-proxy.
+    Django adapter for mPass proxy authentication.
 
     oauth2-proxy sets X-Auth-Request-Email and X-Auth-Request-User on every
     request that has passed OIDC validation. This middleware reads those
@@ -34,13 +39,9 @@ class ProxyAuthMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
         self.enabled = getattr(settings, "MPASS_PROXY_AUTH_ENABLED", True)
-        bypass = getattr(settings, "MPASS_BYPASS_PATHS", _DEFAULT_BYPASS_PATHS)
-        if isinstance(bypass, str):
-            self.bypass_paths = [bypass]
-        elif bypass:
-            self.bypass_paths = list(bypass)
-        else:
-            self.bypass_paths = _DEFAULT_BYPASS_PATHS
+        self.bypass_paths = coerce_bypass_paths(
+            getattr(settings, "MPASS_BYPASS_PATHS", None)
+        )
 
     def __call__(self, request):
         if not self.enabled:
@@ -51,15 +52,14 @@ class ProxyAuthMiddleware:
             return self.get_response(request)
 
         # Bypass paths use their own auth (god-mode local login, instance admin).
-        if any(request.path.startswith(p) for p in self.bypass_paths):
+        if is_bypass_path(request.path, self.bypass_paths):
             return self.get_response(request)
 
         email = request.META.get("HTTP_X_AUTH_REQUEST_EMAIL")
         if not email:
             return self.get_response(request)
 
-        email = email.strip().lower()
-        user = self._resolve_user(email)
+        user = self._resolve_user(normalise_email(email))
 
         # Respect deactivated accounts — mPass authentication does not
         # override an explicit Plane account suspension.
@@ -88,9 +88,11 @@ class ProxyAuthMiddleware:
 
         if created:
             user.set_unusable_password()
-            user.is_password_autoset = True
-            user.is_email_verified = True
-            user.save(update_fields=["password", "is_password_autoset", "is_email_verified"])
+            for field, value in NEW_USER_FLAGS.items():
+                setattr(user, field, value)
+            # NEW_USER_FLAGS keys intentionally drive update_fields — adding a
+            # flag to the core dict automatically includes it in the save().
+            user.save(update_fields=["password", *NEW_USER_FLAGS.keys()])
             Profile.objects.get_or_create(user=user)
 
         return user
