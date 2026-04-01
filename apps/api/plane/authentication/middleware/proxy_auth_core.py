@@ -29,8 +29,8 @@ def normalise_email(email: str) -> str:
 
 
 def is_bypass_path(path: str, bypass_paths: list) -> bool:
-    """Return True if *path* starts with any of the configured bypass prefixes."""
-    return any(path.startswith(p) for p in bypass_paths)
+    """Return True if *path* exactly matches or is a subpath of any bypass prefix."""
+    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in bypass_paths)
 
 
 def coerce_bypass_paths(setting) -> list:

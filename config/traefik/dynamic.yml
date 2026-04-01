@@ -7,10 +7,8 @@ http:
         address: "http://oauth2-proxy:4180/oauth2/auth"
         trustForwardHeader: true
         authResponseHeaders:
-          - X-Auth-Request-Access-Token
           - X-Auth-Request-Email
           - X-Auth-Request-User
-          - Authorization
 
   routers:
     # Frontend route — serves the Next.js/Vite dev server unauthenticated so that

@@ -90,7 +90,8 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
   if (pageType === EPageTypes.NON_AUTHENTICATED) {
     if (!currentUser?.id) {
-      window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
+      if (typeof window !== "undefined")
+        window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
       return <></>;
     } else {
       if (currentUserProfile?.id && isUserOnboard) {
@@ -106,7 +107,8 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
   if (pageType === EPageTypes.ONBOARDING) {
     if (!currentUser?.id) {
-      window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
+      if (typeof window !== "undefined")
+        window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
       return <></>;
     } else {
       if (currentUser && currentUserProfile?.id && isUserOnboard) {
@@ -119,7 +121,8 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
 
   if (pageType === EPageTypes.SET_PASSWORD) {
     if (!currentUser?.id) {
-      window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
+      if (typeof window !== "undefined")
+        window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
       return <></>;
     } else {
       // NOTE: With OIDC auth, is_password_autoset is always true for OIDC-created users,
@@ -142,7 +145,8 @@ export const AuthenticationWrapper = observer(function AuthenticationWrapper(pro
         return <></>;
       }
     } else {
-      window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
+      if (typeof window !== "undefined")
+        window.location.href = `${API_BASE_URL}/oauth2/sign_in?rd=${encodeURIComponent(window.location.href)}`;
       return <></>;
     }
   }

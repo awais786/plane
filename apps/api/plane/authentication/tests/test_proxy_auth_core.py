@@ -59,10 +59,8 @@ class TestIsBypassPath:
         assert is_bypass_path("/api/issues/", ["/god-mode", "/api/instances"]) is False
 
     def test_partial_segment_does_not_match(self):
-        # "/god-modex" should NOT match the "/god-mode" prefix accidentally
-        # because it starts with "/god-mode" — this exposes the known behaviour:
-        # startswith is prefix-based, not segment-based. Document it explicitly.
-        assert is_bypass_path("/god-modex/", ["/god-mode"]) is True  # known behaviour
+        # "/god-modex/" must NOT match "/god-mode" — segment boundary is enforced.
+        assert is_bypass_path("/god-modex/", ["/god-mode"]) is False
 
     def test_instances_prefix_match(self):
         assert is_bypass_path("/api/instances/config/", ["/god-mode", "/api/instances"]) is True
