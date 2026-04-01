@@ -4,28 +4,27 @@
 """
 Test spec for ProxyAuthMiddleware.
 
-Location of middleware under test:
-    apps/api/plane/authentication/middleware/proxy_auth.py
+NOTE: This file is a historical spec/reference document.
+      The canonical, runnable test suite is at:
+          apps/api/plane/authentication/tests/test_proxy_auth.py
 
-Run (from apps/api/):
-    pytest specs/proxy-auth-tests.py -v
-
-All tests are in RED state until the middleware is implemented.
-
-Design contract being tested
------------------------------
-- Reads HTTP_X_AUTH_REQUEST_EMAIL and HTTP_X_AUTH_REQUEST_USER from request.META
+Design contract (matches current implementation)
+-------------------------------------------------
+- Reads HTTP_X_AUTH_REQUEST_EMAIL from request.META
+- If MPASS_PROXY_AUTH_ENABLED is False → pass through (kill switch)
 - If request.user.is_authenticated → pass through immediately (no DB, no login)
 - If path starts with a bypass prefix → pass through immediately (no DB, no login)
   Default bypass prefixes: ["/god-mode", "/api/instances"]
 - If email header is absent → pass through unauthenticated
 - If email is present → get_or_create User, create Profile on first creation,
-  then call login(request, user) to establish session
+  then call user_login(request=request, user=user, is_app=True) to establish session
 - New users get: set_unusable_password(), is_password_autoset=True, is_email_verified=True
-- username is set to X-Auth-Request-User sub value when present, else email
+- username is always uuid4().hex (never the Cognito sub — avoids length/collision issues)
 - Email is normalised (lowercased + stripped) before DB lookup
-- IntegrityError on concurrent creation is handled by falling back to .get()
-- login() is called with explicit backend to avoid ambiguity
+- Inactive users pass through unauthenticated even with a valid header
+- IntegrityError on concurrent creation falls back to .get(email=email),
+  re-raises original IntegrityError if the user still doesn't exist
+- MPASS_BYPASS_PATHS=None falls back to default paths (no crash)
 """
 
 import pytest

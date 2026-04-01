@@ -35,7 +35,12 @@ class ProxyAuthMiddleware:
         self.get_response = get_response
         self.enabled = getattr(settings, "MPASS_PROXY_AUTH_ENABLED", True)
         bypass = getattr(settings, "MPASS_BYPASS_PATHS", _DEFAULT_BYPASS_PATHS)
-        self.bypass_paths = [bypass] if isinstance(bypass, str) else bypass
+        if isinstance(bypass, str):
+            self.bypass_paths = [bypass]
+        elif bypass:
+            self.bypass_paths = list(bypass)
+        else:
+            self.bypass_paths = _DEFAULT_BYPASS_PATHS
 
     def __call__(self, request):
         if not self.enabled:
@@ -70,14 +75,15 @@ class ProxyAuthMiddleware:
                 email=email,
                 defaults={"username": uuid4().hex},
             )
-        except IntegrityError:
+        except IntegrityError as exc:
             # A concurrent request raced us to the insert. The collision could
             # be on email or username — fall back to get() by email, and re-raise
-            # if the user still doesn't exist (a different integrity violation).
+            # the original IntegrityError if the user still doesn't exist
+            # (meaning a different constraint was violated).
             try:
                 user = User.objects.get(email=email)
             except User.DoesNotExist:
-                raise
+                raise exc
             created = False
 
         if created:
