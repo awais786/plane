@@ -11,22 +11,38 @@ from django.db import IntegrityError
 from plane.authentication.utils.login import user_login
 from plane.db.models import Profile, User
 
-from .proxy_auth_core import (
-    NEW_USER_FLAGS,
-    coerce_bypass_paths,
-    is_bypass_path,
-    normalise_email,
-)
-
 # Security note: header spoofing is not a concern on protected routes because
 # Traefik ForwardAuth overwrites X-Auth-Request-* headers before they reach
 # the app. Bypass paths never run this middleware, so spoofed headers there
 # have no effect either.
 
+_DEFAULT_BYPASS_PATHS = ["/god-mode", "/api/instances"]
+
+_NEW_USER_FLAGS = {
+    "is_password_autoset": True,
+    "is_email_verified": True,
+}
+
+
+def _normalise_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def _is_bypass_path(path: str, bypass_paths: list) -> bool:
+    return any(path == p or path.startswith(p.rstrip("/") + "/") for p in bypass_paths)
+
+
+def _coerce_bypass_paths(setting) -> list:
+    if not setting:
+        return list(_DEFAULT_BYPASS_PATHS)
+    if isinstance(setting, str):
+        return [setting]
+    return list(setting)
+
 
 class ProxyAuthMiddleware:
     """
-    Django adapter for mPass proxy authentication.
+    Django middleware for mPass proxy authentication.
 
     oauth2-proxy sets X-Auth-Request-Email and X-Auth-Request-User on every
     request that has passed OIDC validation. This middleware reads those
@@ -40,7 +56,7 @@ class ProxyAuthMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
         self.enabled = getattr(settings, "MPASS_PROXY_AUTH_ENABLED", True)
-        self.bypass_paths = coerce_bypass_paths(
+        self.bypass_paths = _coerce_bypass_paths(
             getattr(settings, "MPASS_BYPASS_PATHS", None)
         )
 
@@ -53,14 +69,14 @@ class ProxyAuthMiddleware:
             return self.get_response(request)
 
         # Bypass paths use their own auth (god-mode local login, instance admin).
-        if is_bypass_path(request.path, self.bypass_paths):
+        if _is_bypass_path(request.path, self.bypass_paths):
             return self.get_response(request)
 
         email = request.META.get("HTTP_X_AUTH_REQUEST_EMAIL")
         if not email:
             return self.get_response(request)
 
-        user = self._resolve_user(normalise_email(email))
+        user = self._resolve_user(_normalise_email(email))
 
         # Respect deactivated accounts — mPass authentication does not
         # override an explicit Plane account suspension.
@@ -77,14 +93,11 @@ class ProxyAuthMiddleware:
                 defaults={
                     "username": uuid4().hex,
                     "password": make_password(None),
-                    **NEW_USER_FLAGS,
+                    **_NEW_USER_FLAGS,
                 },
             )
-        except IntegrityError as exc:
-            # A concurrent request raced us to the insert. The collision could
-            # be on email or username — fall back to get() by email, and re-raise
-            # the original IntegrityError if the user still doesn't exist
-            # (meaning a different constraint was violated).
+        except IntegrityError:
+            # A concurrent request raced us to the insert — fall back to get().
             try:
                 user = User.objects.get(email=email)
             except User.DoesNotExist:
