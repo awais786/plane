@@ -37,7 +37,6 @@ export default defineConfig(() => ({
       "/api": { target: "http://localhost:80", changeOrigin: true },
       "/auth": { target: "http://localhost:80", changeOrigin: true },
       "/oauth2": { target: "http://localhost:80", changeOrigin: true },
-      "/dex": { target: "http://localhost:80", changeOrigin: true },
     },
   },
   // No SSR-specific overrides needed; alias resolves to ESM build
