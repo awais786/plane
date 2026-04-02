@@ -119,6 +119,7 @@ services:
       - ./apps/api:/code
     command: ./bin/docker-entrypoint-api-local.sh
     env_file:
+      - .env
       - ./apps/api/.env
     depends_on:
       - plane-db

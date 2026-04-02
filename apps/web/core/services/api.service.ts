@@ -27,8 +27,6 @@ export abstract class APIService {
       (response) => response,
       (error) => {
         if (error.response && error.response.status === 401) {
-          // Redirect to the oauth2-proxy sign-in endpoint so the OIDC flow starts.
-          // Guard against SSR where window is not defined.
           if (typeof window !== "undefined") {
             const rd = encodeURIComponent(window.location.href);
             window.location.replace(`${this.baseURL}/oauth2/sign_in?rd=${rd}`);
