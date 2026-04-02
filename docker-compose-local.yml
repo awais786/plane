@@ -100,11 +100,14 @@ services:
       OAUTH2_PROXY_SET_XAUTHREQUEST: "true"
       OAUTH2_PROXY_PASS_ACCESS_TOKEN: "false"
       OAUTH2_PROXY_WHITELIST_DOMAINS: "localhost,us-east-1tnhwouxd0.auth.us-east-1.amazoncognito.com"
+      OAUTH2_PROXY_SESSION_STORE_TYPE: redis
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: redis://plane-redis:6379
     dns:
       - 8.8.8.8
       - 8.8.4.4
     depends_on:
       - traefik
+      - plane-redis
 
   api:
     build:
